@@ -25,8 +25,8 @@ change has a documented undo.
 | Source | Contributes | Lands as |
 |---|---|---|
 | **Omarchy** (Arch + Hyprland) | Base OS, native snapshot/rollback chain (snapper + Limine) | untouched base |
-| **Athena OS** | Runtime hardening (`athena-settings`), cyber-toolkit roles, gateway tooling, repository + keyring | Athena repo (`[athena]`) |
-| **BlackArch** | Broad offensive-tool package set | BlackArch repo (`strap.sh`) |
+| **Athena OS** | Runtime hardening (`athena-settings`), cyber-toolkit roles, gateway tooling, repository + keyring | `[athena]` repo — **installed & active** |
+| **BlackArch** | Broad offensive-tool package set | `[blackarch]` repo — **installed & active** |
 | **CSI Linux** | OSINT tooling + CSI-native case workflow | portable Python/Qt tooling only |
 
 ## Design principles
@@ -36,9 +36,12 @@ change has a documented undo.
 3. **No bootloader or kernel-cmdline edits** during the tooling phases.
 4. **Existing tools win** — an already-installed binary is preferred; collisions
    are logged in a replacement ledger rather than silently overwritten.
-5. **Gate between phases** — the prior phase must pass its verification checklist
-   and be signed off before the next begins.
-6. **Runtime hardening only** — no third-party kernel swap and no LSM
+5. **Additive role installs** — cyber-toolkit roles install with `pacman -S
+   --needed` (accumulate), so switching roles never uninstalls prior tooling.
+6. **Gate between phases** — the prior phase must pass its verification checklist
+   (`pacman -Qkk` clean, no enabled services, firewall ruleset unchanged) and be
+   signed off before the next begins.
+7. **Runtime hardening only** — no third-party kernel swap and no LSM
    reconfiguration on a gaming/Steam daily driver.
 
 ## Failsafe / rollback model
@@ -52,24 +55,53 @@ Tiered, from cheapest to last resort:
 | **2** | Per-step reversal (each change names its own undo) | individual changes |
 | **3** | Rescue boot + subvolume swap / cached package downgrade | worst case, boot partition untouched |
 
-The full procedure lives in `rollback.md`.
+Tier 2-3 procedures are documented per change during execution in a private
+runbook kept alongside the working copy.
 
 ## Phases
 
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Safeguards + baseline: snapshot configuration, package/config backups, rollback-chain verification | **done** |
-| **1** | Athena + BlackArch repository bootstrap; runtime hardening (`athena-settings`); firewall; sandboxing (Firejail); gateway tooling | **in progress** |
-| **2** | Athena cyber-toolkit roles, one section at a time: osint → network → forensic → full catalog | planned |
+| **1** | Athena + BlackArch repository bootstrap; runtime hardening (`athena-settings`); firewall audit; gateway tooling | **done** |
+| **2** | Athena cyber-toolkit roles, one section at a time: osint → network → forensic → catalog | osint, network, forensic **done**; remaining catalog **deferred** |
 | **3** | CSI Linux OSINT + case management; partner handoff via a hash-locked evidence bundle | planned |
 
 **Deferred by design** (documented, not executed): third-party kernel swap,
 AppArmor LSM activation, USBGuard lockdown, a dedicated SIEM VM.
+**Firejail is intentionally not installed** — sandboxing a Steam/gaming daily
+driver carries a real breakage risk, so it is held rather than wrapped around
+the base system.
+
+## Implemented configuration (as exercised)
+
+- **Repositories:** Athena keyring `athena-keyring` + mirrorlist
+  `athena-mirrorlist` built from upstream PKGBUILDs (the Athena repo block is
+  appended **last** so official/base-distro repos keep precedence); BlackArch
+  bootstrapped via official `strap.sh`. Result: **92 Athena packages** and
+  **5050 BlackArch packages** resolvable against an untouched
+  core/extra/multilib/omarchy base.
+- **Runtime hardening (`athena-settings`):** installed and scoped to runtime
+  knobs (`kernel.kptr_restrict=1`, etc.). A passwordless `sudo` drop-in shipped
+  by the package was **removed** to preserve the base OS's
+  password-everywhere posture — the base configuration wins on conflicts.
+- **Firewall (UFW):** already active on the base image; audited and left
+  unchanged by every phase (ruleset diffed against baseline after each step).
+- **Gateway tooling:** `nist-feed`, `mitre-attack-navigator`, `athena-nexus`
+  (with their notification/schedule deps) installed and verified clean.
+- **Cyber-toolkit roles:** installed additively and verified. osint (26 pkgs),
+  network (59 pkgs), forensic (61 pkgs) — every package reports **0 altered
+  files** against the archive; no systemd unit is left enabled; the network
+  role's driver packages triggered a normal initramfs rebuild (harmless);
+  the forensic mapping `exiftool` → `perl-image-exiftool` needed no custom
+  handling.
+- **Snapshots:** every phase and role install is bracketed by root + home
+  snapper baselines (`pre`/`post`), enabling Tier 0-1 rollback at any point.
 
 ## Repository bootstrap mechanics
 
 - **Athena:** keyring and mirrorlist are built from upstream PKGBUILDs; the
-  Athena repository block is appended **last** so the official and base-distro
+  repository block is appended **last** so the official and base-distro
   repositories keep precedence. The imported master key fingerprint is verified
   after `pacman-key --populate`.
 - **BlackArch:** bootstrapped with the official `strap.sh`. Because upstream
@@ -78,16 +110,16 @@ AppArmor LSM activation, USBGuard lockdown, a dedicated SIEM VM.
 
 ## Capability map
 
-Installed incrementally, one role section at a time, with a collision check
-against the base system first:
+Installed additively, one role section at a time, with a collision check
+against the base system first. Cell shading reflects execution status.
 
-| Area | Representative tooling |
-|---|---|
-| OSINT | `sherlock`, `theHarvester`, `recon-ng`, `spiderfoot`, `ghunt` |
-| Network | `nmap`, `masscan`, `bettercap`, `wireshark` |
-| Web | `sqlmap`, `ffuf`, `gobuster`, `burpsuite` |
-| Forensics | `sleuthkit`, `autopsy`, `volatility3`, `foremost` |
-| General | `metasploit`, `john`, `hashcat`, `hydra`, `aircrack-ng` |
+| Area | Representative tooling | Status |
+|---|---|---|
+| OSINT | `sherlock`, `theHarvester`, `recon-ng`, `spiderfoot`, `ghunt` | installed & verified |
+| Network | `nmap`, `masscan`, `bettercap`, `wireshark`, `zeek` | installed & verified |
+| Forensics | `sleuthkit`, `volatility3`, `foremost`, `bulk_extractor`, `regripper` | installed & verified |
+| Web | `sqlmap`, `ffuf`, `gobuster`, `burpsuite` | pending (catalog deferred) |
+| General | `metasploit`, `john`, `hashcat`, `hydra`, `aircrack-ng` | pending (catalog deferred) |
 
 **CSI Linux portability:** the portable pieces are the `csilibs` Python package,
 CSI-Manager (`manageapis.py`), the CSI-Utilities one-file tools, OnionSearch,
@@ -101,19 +133,18 @@ export (SHA-256 manifest) — no new transport is invented.
 ## Verification approach
 
 - Backups are **diff-verified** against the live files, not just copied.
-- Snapshot identifiers are recorded per phase in an audit runbook.
-- Each phase closes with an explicit checklist and a human gate.
+- Snapshot identifiers are recorded per phase in the audit runbook.
+- Each phase closes with an explicit checklist and a human gate:
+  `pacman -Qkk` clean (0 altered files), **no enabled systemd units**, and a
+  firewall ruleset diff against the pre-phase snapshot.
 - Package changes are captured as before/after package lists for exact reversal.
 
 ## Repository layout
 
-| File | Purpose |
-|---|---|
-| `runbook.md` | Chronological audit log: every command, snapshot, change, and its undo |
-| `rollback.md` | Tiered restore / undo procedures |
-| `conflicts.md` | Package and config collision ledger (replacement map) |
-| `backups/` | Timestamped copies of package lists, configs, and touched files |
-| `state/` | Machine-readable markers: current phase, last good snapshot, next actions |
+The working copy contains the execution artifacts (private): the audit runbook,
+rollback procedures, collision ledger, timestamped backups, and a
+machine-readable status file. This public repository publishes this sanitized
+README and, over time, the reusable phase scripts.
 
 ## Scope & ethics
 
